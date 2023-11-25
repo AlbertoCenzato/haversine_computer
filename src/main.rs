@@ -9,14 +9,26 @@ fn main() {
     let args = Args::parse();
     println!("Input file {}", args.input.display());
 
-    let example_json = "{ \"name\": \"John Doe\", \"age\": 43 }";
+    //let example_json = "{ \"name\": \"John Doe\", \"age\": 43 }";
+    // read input file to string
+    let example_json = std::fs::read_to_string(args.input).unwrap();
+    let json = example_json.chars().collect::<Vec<char>>();
 
+    let start = std::time::Instant::now();
+
+    println!("Tokens: ");
     let mut tokens = Vec::new();
-    for mut i in 0..example_json.len() {
-        let token = next(&example_json, i);
+    let mut i = 0;
+    while i < example_json.len() {
+        let token = next(&json, i);
         match token {
             Ok(token) => {
                 i = token.end;
+                //println!(
+                //    "{:?}, value: {}",
+                //    &token,
+                //    example_json[token.start..token.end].to_string()
+                //);
                 tokens.push(token);
             }
             Err(description) => {
@@ -24,6 +36,9 @@ fn main() {
             }
         }
     }
+
+    let duration = start.elapsed();
+    println!("Time elapsed in while loop is: {:?}", duration);
 }
 
 fn make_simple_token(token_type: TokenType, index: usize) -> Result<Token, String> {
@@ -34,8 +49,18 @@ fn make_simple_token(token_type: TokenType, index: usize) -> Result<Token, Strin
     });
 }
 
-fn next(data: &str, start_index: usize) -> Result<Token, String> {
-    let c = data.chars().nth(start_index).unwrap();
+enum Status {
+    None,
+    InString(usize),
+    InNumber(usize),
+    InTrue(usize),
+    InFalse(usize),
+    InNull(usize),
+    Error(String),
+}
+
+fn next(data: &[char], start_index: usize) -> Result<Token, String> {
+    let c = data[start_index];
     match c {
         '{' => make_simple_token(TokenType::LeftCurlyBracket, start_index),
         '}' => make_simple_token(TokenType::RightCurlyBracket, start_index),
@@ -47,31 +72,49 @@ fn next(data: &str, start_index: usize) -> Result<Token, String> {
         't' => tokenize_true(&data, start_index),
         'f' => tokenize_false(&data, start_index),
         'n' => tokenize_null(&data, start_index),
-        '0'..='9' => tokenize_number(&data, start_index),
-        _ => panic!("Ill formed Json at position {}", start_index),
+        '0'..='9' | '-' => tokenize_number(&data, start_index),
+        ' ' | '\n' | '\t' | '\r' => {
+            let index = ignore_whitespace(&data, start_index);
+            match index {
+                Some(index) => next(&data, index),
+                None => Err(format!("EOF reached while ignoring whitespace")),
+            }
+        }
+        _ => Err(format!("Ill formed Json at position {}", start_index)),
     }
 }
 
-fn tokenize_string(data: &str, start_index: usize) -> Result<Token, String> {
-    let first_char = data.chars().nth(start_index).unwrap();
+fn ignore_whitespace(data: &[char], start_index: usize) -> Option<usize> {
+    for i in start_index..data.len() {
+        match data[i] {
+            ' ' | '\n' | '\t' | '\r' => continue,
+            _ => return Some(i),
+        }
+    }
+    return None;
+}
+
+fn tokenize_string(data: &[char], start_index: usize) -> Result<Token, String> {
+    let first_char = data[start_index];
     if first_char != '"' {
-        return Err(format!("Ill formed Json at position {}, expected \", got {}",
+        return Err(format!(
+            "Ill formed Json at position {}, expected \", got {}",
             start_index, first_char
         ));
     }
 
     for i in start_index + 1..data.len() {
-        let c = data.chars().nth(i).unwrap();
+        let c = data[i];
         match c {
             '"' => {
-                let prev_char = data.chars().nth(i - 1).unwrap();
+                let prev_char = data[i - 1];
                 if prev_char == '\\' {
                     continue;
                 }
                 return Ok(Token {
                     token_type: TokenType::String,
                     start: start_index,
-                    end: i,
+                    end: i + 1,
                 });
             }
             '\n' => {
@@ -89,12 +132,12 @@ fn tokenize_string(data: &str, start_index: usize) -> Result<Token, String> {
     ));
 }
 
-fn tokenize_number(data: &str, start_index: usize) -> Result<Token, String> {
+fn tokenize_number(data: &[char], start_index: usize) -> Result<Token, String> {
     let mut integer = true;
     for i in start_index..data.len() {
-        let c = data.chars().nth(i).unwrap();
+        let c = data[i];
         match c {
-            '0'..='9' => continue,
+            '0'..='9' | '-' => continue,
             '.' => {
                 if integer {
                     integer = false;
@@ -110,7 +153,7 @@ fn tokenize_number(data: &str, start_index: usize) -> Result<Token, String> {
                 return Ok(Token {
                     token_type: TokenType::Number,
                     start: start_index,
-                    end: i,
+                    end: i + 1,
                 })
             }
         }
@@ -121,8 +164,20 @@ fn tokenize_number(data: &str, start_index: usize) -> Result<Token, String> {
     ));
 }
 
+fn equals(data: &[char], literal: &str) -> bool {
+    if data.len() != literal.len() {
+        return false;
+    }
+    for i in 0..literal.len() {
+        if data[i] != literal.as_bytes()[i] as char {
+            return false;
+        }
+    }
+    return true;
+}
+
 fn tokenize_literal(
-    data: &str,
+    data: &[char],
     literal: &str,
     token_type: TokenType,
     start_index: usize,
@@ -133,7 +188,7 @@ fn tokenize_literal(
             literal, start_index
         ));
     }
-    if &data[start_index..start_index + literal.len()] == literal {
+    if equals(&data[start_index..start_index + literal.len()], literal) {
         return Ok(Token {
             token_type: token_type,
             start: start_index,
@@ -146,19 +201,20 @@ fn tokenize_literal(
     ));
 }
 
-fn tokenize_true(data: &str, start_index: usize) -> Result<Token, String> {
+fn tokenize_true(data: &[char], start_index: usize) -> Result<Token, String> {
     tokenize_literal(data, "true", TokenType::True, start_index)
 }
 
-fn tokenize_false(data: &str, start_index: usize) -> Result<Token, String> {
+fn tokenize_false(data: &[char], start_index: usize) -> Result<Token, String> {
     tokenize_literal(data, "false", TokenType::False, start_index)
 }
 
-fn tokenize_null(data: &str, start_index: usize) -> Result<Token, String> {
+fn tokenize_null(data: &[char], start_index: usize) -> Result<Token, String> {
     tokenize_literal(data, "null", TokenType::Null, start_index)
 }
 
 #[derive(Debug, PartialEq)]
+#[repr(u8)]
 enum TokenType {
     LeftCurlyBracket,
     RightCurlyBracket,
@@ -173,6 +229,7 @@ enum TokenType {
     Null,
 }
 
+#[derive(Debug)]
 struct Token {
     token_type: TokenType,
     start: usize,
